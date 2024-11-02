@@ -1,0 +1,63 @@
+fnma_name,name,type,dtype,is_CURRENCY
+Loan Number,loan_number,VARCHAR,Int64,0
+Acquisition Date,acquisition_date,DATE,datetime64[ns],0
+Note Date,note_date,DATE,datetime64[ns],0
+Maturity Date at Acquisition,maturity_date_at_acquisition,DATE,datetime64[ns],0
+Loan Acquisition UPB,loan_acquisition_upb,VARCHAR,float64,1
+Amortization Type,amortization_type,VARCHAR,string,0
+Interest Type,interest_type,VARCHAR,string,0
+Loan Product Type,loan_product_type,VARCHAR,string,0
+Original UPB,original_upb,VARCHAR,float64,1
+Amortization Term,amortization_term,INTEGER,Int64,0
+Original Interest Rate,original_interest_rate,FLOAT,float64,0
+Lien Position,lien_position,VARCHAR,string,0
+Transaction ID ,transaction_id,VARCHAR,string,0
+Issue Date,issue_date,DATE,datetime64[ns],0
+Loan Acquisition LTV,loan_acquisition_ltv,FLOAT,float64,0
+Underwritten DSCR,underwritten_dscr,FLOAT,float64,0
+Underwritten DSCR Type,underwritten_dscr_type,VARCHAR,string,0
+Original Term,original_term,INTEGER,Int64,0
+Original I/O Term,original_io_term,INTEGER,Int64,0
+I/O End Date,io_end_date,DATE,datetime64[ns],0
+Loan Ever 60+ Days Delinquent,loan_ever_60_plus_days_delinquent,VARCHAR,string,0
+Loss Sharing Type,loss_sharing_type,VARCHAR,string,0
+Modified Loss Sharing Percentage,modified_loss_sharing_percentage,FLOAT,float64,0
+Number of Properties at Acquisition,number_of_properties_at_acquisition,INTEGER,Int64,0
+Property Acquisition Total Unit Count,property_acquisition_total_unit_count,INTEGER,Int64,0
+Specific Property Type,specific_property_type,VARCHAR,string,0
+Year Built,year_built,VARCHAR,string,0
+Property City,property_city,VARCHAR,string,0
+Property State,property_state,VARCHAR,string,0
+Property Zip Code,property_zip_code,VARCHAR,string,0
+Metropolitan Statistical Area,metropolitan_statistical_area,VARCHAR,string,0
+Physical Occupancy %,physical_occupancy_pct,FLOAT,float64,0
+Liquidation/Prepayment Code,liquidation_prepayment_code,VARCHAR,string,0
+Liquidation/Prepayment Date,liquidation_prepayment_date,DATE,datetime64[ns],0
+Foreclosure Date,foreclosure_date,DATE,datetime64[ns],0
+Credit Event Date,credit_event_date,DATE,datetime64[ns],0
+Foreclosure Value,foreclosure_value,FLOAT,float64,1
+Lifetime Net Credit Loss Amount,lifetime_net_credit_loss_amount,VARCHAR,float64,1
+Sale Price,sale_price,FLOAT,float64,1
+Default Amount,default_amount,FLOAT,float64,1
+Credit Event Type,credit_event_type,VARCHAR,string,0
+Reporting Period Date,reporting_period_date,DATE,datetime64[ns],0
+Loan Active Property Count,loan_active_property_count,INTEGER,Int64,0
+Note Rate,note_rate,FLOAT,float64,0
+Maturity Date - Current,maturity_date_current,DATE,datetime64[ns],0
+UPB - Current,upb_current,FLOAT,float64,1
+Delinquency UPB,delinquency_upb,FLOAT,float64,1
+Loan Payment Status,loan_payment_status,VARCHAR,string,0
+SDQ Indicator,sdq_indicator,VARCHAR,string,0
+Most Recent Modification Date,most_recent_modification_date,DATE,datetime64[ns],0
+Modification Indicator,modification_indicator,VARCHAR,string,0
+Defeasance Date,defeasance_date,DATE,datetime64[ns],0
+Prepayment Provision,prepayment_provision,VARCHAR,string,0
+Prepayment Provision End Date,prepayment_provision_end_date,DATE,datetime64[ns],0
+Affordable Housing Type,affordable_housing_type,VARCHAR,string,0
+MCIRT Deal ID,mcirt_deal_id,INTEGER,Int64,0
+MCAS Deal ID,mcas_deal_id,INTEGER,Int64,0
+DUS Prepayment Outcomes,dus_prepayment_outcomes,VARCHAR,string,0
+DUS Prepayment Segments,dus_prepayment_segments,VARCHAR,string,0
+Loan Age,loan_age,INTEGER,Int64,0
+Green Bond Indicator,green_bond_indicator,VARCHAR,string,0
+Social Bond Indicator,social_bond_indicator,VARCHAR,string,0
