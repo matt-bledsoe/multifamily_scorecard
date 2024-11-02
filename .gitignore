@@ -1,4 +1,5 @@
 .DS_Store
+.ipynb_checkpoints/
 # Project specific exclusions
 raw_data/
 fnma_docs/
