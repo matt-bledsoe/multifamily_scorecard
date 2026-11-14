@@ -3,3 +3,6 @@
 # Project specific exclusions
 raw_data/
 fnma_docs/
+/data/
+.venv/
+__pycache__/

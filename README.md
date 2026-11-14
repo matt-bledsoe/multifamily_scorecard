@@ -1,4 +1,12 @@
 # multifamily_scorecard
+
+## How to run
+
+1. Install [uv](https://docs.astral.sh/uv/), then run `uv sync`.
+2. Download the Multifamily Loan Performance Data CSV from Fannie Mae (link in [Data](#data)) into `data/raw/`, and set `data.raw_file` in `config.toml` to its filename.
+3. Run `uv run python -m mf_scorecard.data.load` to build the `mflpd_raw` table in `data/mflpd.duckdb`. If the file's columns don't match `src/mf_scorecard/data/mflpd_schema.csv`, the loader stops and lists the differences.
+4. Run `uv run pytest` to run the tests.
+
 This project is an example place to work out the model development process for my team at work. The data used and the the goal is relevant to my job, which is an added benefit. I want to do the work (mostly) in Python to force myself to learn more (I'm more of an R user). I will constantly refer to the Federal Reserve's _Supervisory Guidance on Model Risk Management_, which is known as [SR 11-7](https://www.federalreserve.gov/supervisionreg/srletters/sr1107a1.pdf). This document contains the principles and standards to which model development and related activities at commercial banks are held.
 
 ## Purpose

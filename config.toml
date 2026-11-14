@@ -1,0 +1,9 @@
+# Project configuration. Paths are relative to the repo root.
+
+[data]
+# Raw MFLPD CSV as downloaded from Fannie Mae (git-ignored). Update this when
+# a new release is downloaded.
+raw_file = "data/raw/FNMA_MF_Loan_Performance_Data_202606.csv"
+
+# Persistent DuckDB database built from the raw file (git-ignored).
+database = "data/mflpd.duckdb"
