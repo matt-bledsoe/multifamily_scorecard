@@ -11,3 +11,6 @@ database = "data/mflpd.duckdb"
 # One JSON manifest per data release (committed), recording exactly which
 # file and code built the database.
 manifest_dir = "manifests"
+
+# Data quality reports, one subdirectory per raw file (committed).
+report_dir = "reports/data_quality"

@@ -7,7 +7,8 @@
 3. Run `uv run python -m mf_scorecard.data.load` to build the `mflpd_raw` table in `data/mflpd.duckdb`. If the file's columns don't match `src/mf_scorecard/data/mflpd_schema.csv`, the loader stops and lists the differences.
 4. Run `uv run python -m mf_scorecard.data.stage` to build `mflpd_stage` from `mflpd_raw`. It converts currency text to numbers, `Y`/`N` flags to booleans, and `year_built` to an integer, using the `dtype` column of the schema CSV.
 5. Run `uv run python -m mf_scorecard.data.manifest` to record the build in `manifests/<raw file name>.json` (commit this file) and in the `data_manifest` table. The manifest holds the file's SHA-256 hash, row and loan counts, and the code's git commit. It refuses to overwrite a manifest whose file hash differs.
-6. Run `uv run pytest` to run the tests.
+6. Run `uv run python -m mf_scorecard.data.quality` to run the data quality checks on `mflpd_stage`. Results go to `reports/data_quality/<raw file name>/` (`checks.csv` and `missingness.csv`; commit these) and to the `dq_checks` and `dq_missingness` tables. The step exits with an error if any `error`-severity check fails. `warning` checks flag known data issues that are handled later in the pipeline.
+7. Run `uv run pytest` to run the tests.
 
 This project is an example place to work out the model development process for my team at work. The data used and the the goal is relevant to my job, which is an added benefit. I want to do the work (mostly) in Python to force myself to learn more (I'm more of an R user). I will constantly refer to the Federal Reserve's _Supervisory Guidance on Model Risk Management_, which is known as [SR 11-7](https://www.federalreserve.gov/supervisionreg/srletters/sr1107a1.pdf). This document contains the principles and standards to which model development and related activities at commercial banks are held.
 
