@@ -64,10 +64,10 @@ def git_state(repo: Path = REPO_ROOT, ignore: tuple[str, ...] = ()) -> dict:
 
 
 def table_stats(con: duckdb.DuckDBPyConnection, table: str) -> dict:
-    n_rows, n_loans, first, last = con.execute(
+    [(n_rows, n_loans, first, last)] = con.execute(
         f"SELECT count(*), count(DISTINCT loan_number), "
         f"min(reporting_period_date), max(reporting_period_date) FROM {table}"
-    ).fetchone()
+    ).fetchall()
     return {
         "n_rows": n_rows,
         "n_loans": n_loans,
