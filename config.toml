@@ -7,3 +7,7 @@ raw_file = "data/raw/FNMA_MF_Loan_Performance_Data_202606.csv"
 
 # Persistent DuckDB database built from the raw file (git-ignored).
 database = "data/mflpd.duckdb"
+
+# One JSON manifest per data release (committed), recording exactly which
+# file and code built the database.
+manifest_dir = "manifests"
