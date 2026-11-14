@@ -27,39 +27,12 @@ import duckdb
 import polars as pl
 
 from mf_scorecard.config import REPO_ROOT, load_config, repo_path
-from mf_scorecard.data.load import read_schema
+from mf_scorecard.data.load import columns_at_level, read_schema
 from mf_scorecard.data.stage import STAGE_TABLE
 
 CHECKS_TABLE = "dq_checks"
 MISSINGNESS_TABLE = "dq_missingness"
 N_EXAMPLES = 5
-
-# Attributes fixed at acquisition: must not vary across a loan's history.
-STATIC_COLUMNS = [
-    "acquisition_date",
-    "note_date",
-    "maturity_date_at_acquisition",
-    "loan_acquisition_upb",
-    "original_upb",
-    "original_interest_rate",
-    "original_term",
-    "amortization_type",
-    "interest_type",
-    "loan_product_type",
-    "loan_acquisition_ltv",
-    "underwritten_dscr",
-    "specific_property_type",
-    "property_state",
-    "year_built",
-    "loan_ever_60_plus_days_delinquent",
-    "liquidation_prepayment_code",
-    "liquidation_prepayment_date",
-    "credit_event_type",
-    # Despite its name, loan_age is the loan's age when it terminated (months
-    # from note date to last report), not its age in each reporting period.
-    # It is filled in almost only for paid-off/liquidated loans.
-    "loan_age",
-]
 
 REQUIRED_COLUMNS = [
     "loan_number",
@@ -105,13 +78,35 @@ def rows_where(condition: str) -> str:
 
 
 def static_check(col: str) -> Check:
+    """Loan-level column: one value per loan, with blank counted as a value."""
     return Check(
         f"static_{col}",
         "error",
-        f"{col} is constant within each loan",
+        f"{col} is constant within each loan (including blanks)",
         f"SELECT loan_number FROM {STAGE_TABLE} GROUP BY loan_number "
-        f"HAVING count(DISTINCT {col}) > 1",
+        f"HAVING count(DISTINCT coalesce(CAST({col} AS VARCHAR), '<null>')) > 1",
     )
+
+
+def event_checks(col: str) -> list[Check]:
+    """Event column: blank until the event, then one value from then on."""
+    return [
+        Check(
+            f"event_single_value_{col}",
+            "error",
+            f"{col} has at most one non-blank value per loan",
+            f"SELECT loan_number FROM {STAGE_TABLE} GROUP BY loan_number "
+            f"HAVING count(DISTINCT {col}) > 1",
+        ),
+        Check(
+            f"event_stays_set_{col}",
+            "warning",
+            f"{col} does not go blank again once set",
+            f"SELECT loan_number FROM {STAGE_TABLE} GROUP BY loan_number "
+            f"HAVING max(reporting_period_date) FILTER ({col} IS NULL) > "
+            f"min(reporting_period_date) FILTER ({col} IS NOT NULL)",
+        ),
+    ]
 
 
 CHECKS: list[Check] = [
@@ -131,7 +126,10 @@ CHECKS: list[Check] = [
         "Reporting periods fall on the first of the month",
         rows_where("day(reporting_period_date) <> 1"),
     ),
-    *(static_check(c) for c in STATIC_COLUMNS),
+    # Schema level "loan": fixed for the life of the loan.
+    *(static_check(c) for c in columns_at_level("loan") if c != "loan_number"),
+    # Schema level "event": blank until an event (payoff, foreclosure, ...).
+    *(check for c in columns_at_level("event") for check in event_checks(c)),
     Check(
         "duplicate_loan_period",
         "warning",

@@ -1,20 +1,16 @@
 from datetime import date
 
-import duckdb
 import pytest
 
-from mf_scorecard.data.load import read_schema
+from mf_scorecard.data.load import columns_at_level
 from mf_scorecard.data.quality import (
     CHECKS,
-    STATIC_COLUMNS,
     Check,
     missingness,
     run_check,
     run_checks,
 )
 from mf_scorecard.data.stage import STAGE_TABLE
-
-DUCKDB_TYPES = {"Float64": "DOUBLE", "Int64": "INTEGER", "Boolean": "BOOLEAN"}
 
 GOOD_ROW = {
     "loan_number": "001",
@@ -40,21 +36,8 @@ GOOD_ROW = {
 
 
 @pytest.fixture
-def con():
-    """In-memory DB with an empty stage table typed like the real one."""
-    con = duckdb.connect()
-    cols = ", ".join(
-        f'"{r["name"]}" '
-        + (
-            DUCKDB_TYPES[r["dtype"]]
-            if r["type"] == "VARCHAR" and r["dtype"] in DUCKDB_TYPES
-            else r["type"]
-        )
-        for r in read_schema().iter_rows(named=True)
-    )
-    con.execute(f"CREATE TABLE {STAGE_TABLE} ({cols})")
-    yield con
-    con.close()
+def con(stage_con):
+    return stage_con
 
 
 def insert(con, **overrides):
@@ -75,8 +58,36 @@ def test_check_names_unique():
     assert len(names) == len(set(names))
 
 
-def test_static_columns_exist_in_schema():
-    assert set(STATIC_COLUMNS) <= set(read_schema()["name"])
+def test_level_driven_checks_exist():
+    names = {c.name for c in CHECKS}
+    for col in columns_at_level("loan"):
+        assert col == "loan_number" or f"static_{col}" in names
+    for col in columns_at_level("event"):
+        assert f"event_single_value_{col}" in names
+        assert f"event_stays_set_{col}" in names
+
+
+def test_static_check_counts_blank_as_value(con):
+    insert(con)
+    insert(con, reporting_period_date=date(2020, 3, 1), year_built=None)
+    result = run_check(con, check("static_year_built"))
+    assert (result["passed"], result["n_loans"]) == (False, 1)
+
+
+def test_event_checks(con):
+    name = "defeasance_date"
+    insert(con, reporting_period_date=date(2020, 2, 1))
+    insert(con, reporting_period_date=date(2020, 3, 1), **{name: date(2020, 3, 5)})
+    assert run_check(con, check(f"event_single_value_{name}"))["passed"]
+    assert run_check(con, check(f"event_stays_set_{name}"))["passed"]
+
+    # Goes blank again after being set.
+    insert(con, reporting_period_date=date(2020, 4, 1))
+    assert not run_check(con, check(f"event_stays_set_{name}"))["passed"]
+
+    # A second, different value.
+    insert(con, reporting_period_date=date(2020, 5, 1), **{name: date(2020, 5, 5)})
+    assert not run_check(con, check(f"event_single_value_{name}"))["passed"]
 
 
 def test_bad_severity_rejected():
