@@ -1,0 +1,355 @@
+---
+title: "Data exploration"
+---
+
+```{python}
+#| label: setup
+#| code-summary: "Setup"
+import duckdb
+import matplotlib.pyplot as plt
+import polars as pl
+from IPython.display import Markdown
+
+from mf_scorecard import eda, viz
+from mf_scorecard.config import load_config, repo_path
+
+viz.apply_style()
+cfg = load_config()["data"]
+con = duckdb.connect(str(repo_path(cfg["database"])), read_only=True)
+
+o = eda.overview(con)
+v = eda.vintages(con)
+through = eda.data_through(con)
+cutoff = through - eda.SEASONING_YEARS
+```
+
+SR 11-7 asks for "a rigorous assessment of data quality and relevance"
+(p. 6). The data quality checks (`reports/data_quality/`) test whether the
+data is internally consistent. This chapter asks the next question: what is
+in the data, and what does that imply for a default model?
+
+The data covers `{python} f"{o['n_loans']:,}"` loans with
+`{python} f"${o['original_upb_bn']:,.0f}"` billion of original balance,
+acquired by Fannie Mae between `{python} o['first_acquisition'].year` and
+`{python} o['last_acquisition'].year`, with monthly performance through
+`{python} o['last_period'].strftime('%B %Y')`. Of these,
+`{python} f"{o['n_terminated']:,}"` have paid off or otherwise left the
+data, `{python} f"{o['n_ever_60']:,}"` were ever 60 or more days delinquent,
+and `{python} f"{o['n_credit_events']:,}"` had a credit event (foreclosure
+or other loss).
+
+## Acquisitions by vintage
+
+```{python}
+#| label: fig-vintage-counts
+#| fig-cap: "Loans acquired per year."
+fig, ax = plt.subplots(figsize=(8, 3.2))
+viz.columns(ax, v["acquisition_year"].to_list(), v["n_loans"].to_list())
+viz.thousands(ax)
+ax.set_title("Loans acquired")
+ax.set_xlabel("Acquisition year")
+plt.show()
+```
+
+Volume roughly tripled between the early 2000s and the 2020 peak. A model fit
+on all loans will therefore be dominated by recent vintages, which have the
+least performance history. The `{python} o['last_acquisition'].year` vintage
+is a partial year.
+
+## Delinquency by vintage
+
+The loan-level flag `loan_ever_60_plus_days_delinquent` is the simplest
+measure of credit performance available. It is not yet the model's default
+definition (that is set in Phase 2), but it shows where the bad outcomes are.
+
+```{python}
+#| label: fig-vintage-ever60
+#| fig-cap: "Share of loans ever 60+ days delinquent, by acquisition year. Gray vintages have under three years of history."
+fig, ax = plt.subplots(figsize=(8, 3.2))
+viz.columns(
+    ax,
+    v["acquisition_year"].to_list(),
+    v["ever_60_pct"].to_list(),
+    deemphasise=(~v["seasoned"]).to_list(),
+)
+viz.percent(ax)
+young = v.filter(~pl.col("seasoned"))
+ax.annotate(
+    "Not yet\nseasoned",
+    xy=(young["acquisition_year"].mean(), young["ever_60_pct"].max()),
+    xytext=(0, 18),
+    textcoords="offset points",
+    ha="center",
+    fontsize=9,
+    color=viz.COLORS["ink_secondary"],
+)
+ax.set_title("Ever 60+ days delinquent")
+ax.set_xlabel("Acquisition year")
+plt.show()
+```
+
+```{python}
+#| label: delinquency-summary
+peak = v.filter(pl.col("seasoned")).sort("ever_60_pct", descending=True).row(0, named=True)
+crisis = v.filter(pl.col("acquisition_year").is_between(2006, 2008))
+post = v.filter(pl.col("acquisition_year").is_between(2010, cutoff))
+
+
+def pooled_rate(df: pl.DataFrame) -> float:
+    """Ever-60+ rate across several vintages, weighted by loan count."""
+    return (df["ever_60_pct"] * df["n_loans"]).sum() / df["n_loans"].sum()
+
+
+crisis_rate = pooled_rate(crisis)
+post_rate = pooled_rate(post)
+```
+
+Two patterns matter for modeling:
+
+- **The cycle shows up clearly.** Loans acquired in 2006–2008 went 60+ days
+  delinquent at `{python} f"{crisis_rate:.1f}"`%, against
+  `{python} f"{post_rate:.1f}"`% for 2010–`{python} cutoff` vintages. The
+  worst seasoned vintage is `{python} peak['acquisition_year']` at
+  `{python} f"{peak['ever_60_pct']:.1f}"`%. A through-the-cycle PD must be
+  calibrated over a period that includes the 2008–2010 stress, which is why
+  the roadmap holds those years out for testing.
+- **Young vintages look safe because they are young.** A loan acquired in
+  `{python} through - 1` has had little time to go delinquent. Any comparison
+  across vintages, and the model's default definition, has to account for
+  time on book (a one-year horizon from a snapshot date, as planned for
+  Phase 2, does this).
+
+## Portfolio composition
+
+```{python}
+#| label: composition
+prop = eda.by_category(con, "specific_property_type")
+prop_seasoned = eda.by_category(con, "specific_property_type", seasoned_only=True)
+product = eda.by_category(con, "loan_product_type", seasoned_only=True)
+states = eda.by_category(con, "property_state")
+```
+
+```{python}
+#| label: fig-property-type
+#| fig-cap: "Loans by property type."
+fig, ax = plt.subplots(figsize=(7, 3))
+viz.ranked_bars(ax, prop["value"].to_list(), prop["n_loans"].to_list())
+ax.set_title("Loans by property type")
+plt.show()
+```
+
+Conventional multifamily dominates (`{python} f"{prop['pct_loans'][0]:.0f}"`%
+of loans). The smaller property types behave very differently, so the
+delinquency rates below are restricted to vintages through
+`{python} cutoff` to avoid diluting them with unseasoned loans:
+
+```{python}
+#| label: tbl-property-type
+#| tbl-cap: "Ever 60+ days delinquent by property type, seasoned vintages only."
+Markdown(
+    viz.markdown_table(
+        prop_seasoned.rename(
+            {
+                "value": "Property type",
+                "n_loans": "Loans",
+                "pct_loans": "% of loans",
+                "ever_60_pct": "Ever 60+ (%)",
+            }
+        )
+    )
+)
+```
+
+Seniors housing and dedicated student housing are delinquent two to three
+times as often as conventional multifamily, while manufactured housing and
+military housing are rarely delinquent. Property type is a strong candidate
+driver, but the small segments have few defaults, which limits how finely
+the model can distinguish them.
+
+```{python}
+#| label: tbl-product
+#| tbl-cap: "Ever 60+ days delinquent by Fannie Mae product, seasoned vintages only."
+Markdown(
+    viz.markdown_table(
+        product.rename(
+            {
+                "value": "Product",
+                "n_loans": "Loans",
+                "pct_loans": "% of loans",
+                "ever_60_pct": "Ever 60+ (%)",
+            }
+        )
+    )
+)
+```
+
+Almost all loans are DUS (Delegated Underwriting and Servicing), where the
+lender shares losses with Fannie Mae. This loss sharing is one reason
+performance here may differ from loans a bank holds on its own balance
+sheet, which the representativeness assessment in Phase 5 has to address.
+
+## Geography
+
+```{python}
+#| label: fig-states
+#| fig-cap: "Loans by state, 15 largest."
+top = states.head(15)
+fig, ax = plt.subplots(figsize=(7, 4.2))
+viz.ranked_bars(ax, top["value"].to_list(), top["n_loans"].to_list())
+ax.set_title("Loans by state (15 largest)")
+plt.show()
+```
+
+```{python}
+#| label: geo-summary
+top5_share = states.head(5)["pct_loans"].sum()
+multi = states.filter(pl.col("value") == "Multiple Properties")
+n_multi = multi["n_loans"][0] if multi.height else 0
+```
+
+Lending is concentrated: the five largest states hold
+`{python} f"{top5_share:.0f}"`% of loans, led by California. The data has
+`{python} states.height` distinct state values, because it includes
+Washington DC, Puerto Rico and the US Virgin Islands, and `{python} f"{n_multi:,}"` loans secured by
+properties in several places report `Multiple Properties` instead of a state.
+Those loans also have no year built, unit count or occupancy, so the model
+will need a rule for them.
+
+## Underwriting metrics
+
+Debt service coverage (DSCR), loan-to-value (LTV) and occupancy at
+underwriting are the classic drivers of commercial real estate default.
+
+```{python}
+#| label: fig-underwriting
+#| fig-cap: "Distribution of underwriting metrics at acquisition. Each panel shows the range named in its title; counts outside the range are listed in the table below."
+ranges = {
+    "underwritten_dscr": ("DSCR", 0.75, 4.0, 0.05),
+    "loan_acquisition_ltv": ("LTV (%)", 0, 100, 2),
+    "physical_occupancy_pct": ("Occupancy (%)", 0, 100, 2),
+}
+fig, axes = plt.subplots(1, 3, figsize=(10, 3), sharey=False)
+rows = []
+for ax, (col, (label, lo, hi, step)) in zip(axes, ranges.items()):
+    vals = eda.values(con, col)
+    inside = vals.filter(vals.is_between(lo, hi))
+    bins = [lo + i * step for i in range(int(round((hi - lo) / step)) + 1)]
+    viz.histogram(ax, inside.to_list(), bins, label)
+    ax.set_title(f"{label}, {lo:g}–{hi:g}", fontsize=10)
+    counts = eda.range_counts(con, col, lo, hi)
+    rows.append(
+        {
+            "Metric": label,
+            "Median": float(vals.median()),
+            "Below range": counts["below"],
+            "Above range": counts["above"],
+            "Missing": counts["null"],
+        }
+    )
+fig.tight_layout()
+plt.show()
+```
+
+```{python}
+#| label: tbl-underwriting
+#| tbl-cap: "Underwriting metrics: median and loans outside the plotted range."
+Markdown(viz.markdown_table(pl.DataFrame(rows), decimals=2))
+```
+
+```{python}
+#| label: occupancy-summary
+n_zero_occ = eda.values(con, "physical_occupancy_pct").eq(0).sum()
+ltv = eda.values(con, "loan_acquisition_ltv")
+ltv_over_80 = 100 * ltv.gt(80).mean()
+```
+
+What stands out:
+
+- **DSCR** spikes at 1.25, a common minimum coverage requirement, and has a
+  long right tail. Values above 4 are loans with little debt relative to
+  income (or data errors) and will need capping before modeling.
+- **LTV** clusters at round numbers (65%, 75%, 80%), consistent with
+  maximums set by underwriting tiers, and only
+  `{python} f"{ltv_over_80:.1f}"`% of loans exceed 80%. Little variation at the risky end means LTV may
+  discriminate less here than in a bank's own book.
+- **Occupancy** has `{python} f"{n_zero_occ:,}"` loans at exactly 0%. These
+  are almost certainly "not reported" rather than empty buildings and should
+  be treated as missing. Values also pile up at 95%, a common underwriting
+  convention, so the field has less information than its range suggests.
+
+```{python}
+#| label: fig-underwriting-trend
+#| fig-cap: "Median underwritten DSCR and LTV by acquisition year."
+fig, axes = plt.subplots(1, 2, figsize=(10, 3))
+for ax, (col, title) in zip(
+    axes, [("median_dscr", "Median DSCR"), ("median_ltv", "Median LTV (%)")]
+):
+    ax.plot(
+        v["acquisition_year"],
+        v[col],
+        color=viz.COLORS["series"],
+        linewidth=2,
+        marker="o",
+        markersize=4,
+    )
+    ax.set_title(title)
+    ax.set_xlabel("Acquisition year")
+fig.tight_layout()
+plt.show()
+```
+
+Median LTV fell from the mid-70s in the early 2000s to the 60s after 2008, a
+real tightening of underwriting. The DSCR series is different: its rise
+through 2016 and sharp drop in 2018 line up with changes in **how DSCR is
+measured**, recorded in `underwritten_dscr_type`:
+
+```{python}
+#| label: tbl-dscr-types
+#| tbl-cap: "DSCR definitions in the data, in order of first use."
+dscr = eda.dscr_definitions(con).rename(
+    {
+        "dscr_type": "DSCR type",
+        "first_vintage": "First vintage",
+        "last_vintage": "Last vintage",
+        "main_vintage": "Most common vintage",
+        "n_loans": "Loans",
+        "median_dscr": "Median DSCR",
+    }
+)
+Markdown(
+    viz.markdown_table(
+        dscr,
+        decimals=2,
+        no_separator=("First vintage", "Last vintage", "Most common vintage"),
+    )
+)
+```
+
+Each era uses mostly one definition, and the definitions give different
+levels: the median "UW Actual DSCR" of the 2012–2017 loans is well above the
+other two. As recorded, DSCR is not comparable across vintages, and a model
+that pools them would learn the definition change as if it were a change in
+risk. Phase 4 needs to handle this, for example by standardising DSCR within
+each definition or by including the definition as a variable. More
+generally, because underwriting also moved over time, the analysis should
+check that each driver's effect holds within vintages, not only across them.
+
+## Implications for the model
+
+1. **Default definition and horizon (Phase 2):** use a one-year horizon from
+   annual snapshots so that loans of different ages are compared fairly.
+2. **Calibration (Phase 4):** the long-run default rate must include the
+   2006–2008 vintages and the 2008–2010 stress years.
+3. **Data treatments:** treat 0% occupancy as missing; cap DSCR and make it
+   comparable across its four definitions; define a rule for
+   `Multiple Properties` loans, which lack state and property details.
+4. **Candidate drivers:** property type, DSCR, LTV, occupancy and vintage
+   effects all show signal; the small property types will need grouping.
+5. **Representativeness (Phase 5):** Fannie Mae's LTV ceiling and DUS loss
+   sharing make this data different from a bank's own multifamily book.
+
+```{python}
+#| label: teardown
+#| include: false
+con.close()
+```

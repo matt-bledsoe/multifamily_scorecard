@@ -1,0 +1,17 @@
+# Preface {.unnumbered}
+
+This book documents the development of a multifamily rating scorecard
+following the Federal Reserve's *Supervisory Guidance on Model Risk
+Management* ([SR 11-7](https://www.federalreserve.gov/supervisionreg/srletters/sr1107a1.pdf)).
+The model is built on Fannie Mae's Multifamily Loan Performance Data and
+exists to illustrate the model development process, not for use.
+
+Each chapter covers one stage of development. The code that produces every
+table and figure is in the `mf_scorecard` package in this repository and can
+be shown inline with the "Show code" toggles.
+
+To rebuild the book, first build the database (see the README), then run:
+
+```sh
+uv run --group docs quarto render docs
+```
