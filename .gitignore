@@ -6,3 +6,5 @@ fnma_docs/
 /data/
 .venv/
 __pycache__/
+docs/_book/
+docs/.quarto/
