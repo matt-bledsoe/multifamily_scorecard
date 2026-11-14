@@ -35,27 +35,27 @@ Liquidation/Prepayment Code,liquidation_prepayment_code,VARCHAR,string,0
 Liquidation/Prepayment Date,liquidation_prepayment_date,DATE,datetime64[ns],0
 Foreclosure Date,foreclosure_date,DATE,datetime64[ns],0
 Credit Event Date,credit_event_date,DATE,datetime64[ns],0
-Foreclosure Value,foreclosure_value,FLOAT,float64,1
+Foreclosure Value,foreclosure_value,VARCHAR,float64,1
 Lifetime Net Credit Loss Amount,lifetime_net_credit_loss_amount,VARCHAR,float64,1
-Sale Price,sale_price,FLOAT,float64,1
-Default Amount,default_amount,FLOAT,float64,1
+Sale Price,sale_price,VARCHAR,float64,1
+Default Amount,default_amount,VARCHAR,float64,1
 Credit Event Type,credit_event_type,VARCHAR,string,0
 Reporting Period Date,reporting_period_date,DATE,datetime64[ns],0
 Loan Active Property Count,loan_active_property_count,INTEGER,Int64,0
 Note Rate,note_rate,FLOAT,float64,0
 Maturity Date - Current,maturity_date_current,DATE,datetime64[ns],0
-UPB - Current,upb_current,FLOAT,float64,1
-Delinquency UPB,delinquency_upb,FLOAT,float64,1
+UPB - Current,upb_current,VARCHAR,float64,1
+Delinquency UPB,delinquency_upb,VARCHAR,float64,1
 Loan Payment Status,loan_payment_status,VARCHAR,string,0
 SDQ Indicator,sdq_indicator,VARCHAR,string,0
 Most Recent Modification Date,most_recent_modification_date,DATE,datetime64[ns],0
 Modification Indicator,modification_indicator,VARCHAR,string,0
 Defeasance Date,defeasance_date,DATE,datetime64[ns],0
 Prepayment Provision,prepayment_provision,VARCHAR,string,0
-Prepayment Provision End Date,prepayment_provision_end_date,DATE,datetime64[ns],0
+Prepayment Provision End Date,prepayment_provision_end_date,VARCHAR,string,0
 Affordable Housing Type,affordable_housing_type,VARCHAR,string,0
-MCIRT Deal ID,mcirt_deal_id,INTEGER,Int64,0
-MCAS Deal ID,mcas_deal_id,INTEGER,Int64,0
+MCIRT Deal ID,mcirt_deal_id,VARCHAR,string,0
+MCAS Deal ID,mcas_deal_id,VARCHAR,string,0
 DUS Prepayment Outcomes,dus_prepayment_outcomes,VARCHAR,string,0
 DUS Prepayment Segments,dus_prepayment_segments,VARCHAR,string,0
 Loan Age,loan_age,INTEGER,Int64,0
