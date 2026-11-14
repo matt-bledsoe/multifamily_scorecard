@@ -1,4 +1,5 @@
 import json
+import subprocess
 from pathlib import Path
 
 import duckdb
@@ -8,6 +9,7 @@ from mf_scorecard.data.load import RAW_TABLE
 from mf_scorecard.data.manifest import (
     MANIFEST_TABLE,
     build_manifest,
+    git_state,
     release_from_filename,
     sha256,
     store_manifest,
@@ -40,6 +42,24 @@ def test_release_from_filename():
     assert release_from_filename(Path("X_Data_202606.csv")) == "2026-06"
     assert release_from_filename(Path("X_Data__202403.csv")) == "2024-03"
     assert release_from_filename(Path("no_date.csv")) is None
+
+
+def test_git_state_ignores_listed_paths(tmp_path):
+    def git(*args):
+        subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True)
+
+    git("init", "-q")
+    (tmp_path / "code.py").write_text("x = 1\n")
+    git("add", ".")
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init")
+
+    (tmp_path / "manifests").mkdir()
+    (tmp_path / "manifests" / "m.json").write_text("{}")
+    assert git_state(tmp_path, ignore=("manifests",))["uncommitted_changes"] is False
+    assert git_state(tmp_path)["uncommitted_changes"] is True
+
+    (tmp_path / "code.py").write_text("x = 2\n")
+    assert git_state(tmp_path, ignore=("manifests",))["uncommitted_changes"] is True
 
 
 def test_sha256_reads_in_chunks(data_file):

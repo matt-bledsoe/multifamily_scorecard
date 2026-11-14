@@ -39,16 +39,25 @@ def release_from_filename(path: Path) -> str | None:
     return f"{m[1]}-{m[2]}" if m else None
 
 
-def git_state(repo: Path = REPO_ROOT) -> dict:
+def git_state(repo: Path = REPO_ROOT, ignore: tuple[str, ...] = ()) -> dict:
+    """Current commit, and whether the code has uncommitted changes.
+
+    ``ignore`` lists repo-relative paths that don't count as code changes,
+    such as the manifest directory this step itself writes to.
+    """
+
     def git(*args: str) -> str:
         return subprocess.run(
             ["git", *args], cwd=repo, capture_output=True, text=True, check=True
         ).stdout.strip()
 
+    excludes = [f":(exclude){p}" for p in ignore]
     try:
         return {
             "commit": git("rev-parse", "HEAD"),
-            "uncommitted_changes": bool(git("status", "--porcelain")),
+            "uncommitted_changes": bool(
+                git("status", "--porcelain", "--", ".", *excludes)
+            ),
         }
     except (OSError, subprocess.CalledProcessError):
         return {"commit": None, "uncommitted_changes": None}
@@ -67,7 +76,11 @@ def table_stats(con: duckdb.DuckDBPyConnection, table: str) -> dict:
     }
 
 
-def build_manifest(con: duckdb.DuckDBPyConnection, data_file: Path) -> dict:
+def build_manifest(
+    con: duckdb.DuckDBPyConnection,
+    data_file: Path,
+    git_ignore: tuple[str, ...] = (),
+) -> dict:
     raw = table_stats(con, RAW_TABLE)
     stage = table_stats(con, STAGE_TABLE)
     if raw != stage:
@@ -83,7 +96,7 @@ def build_manifest(con: duckdb.DuckDBPyConnection, data_file: Path) -> dict:
         "file_size_bytes": data_file.stat().st_size,
         "schema_sha256": hashlib.sha256(schema_file.read_bytes()).hexdigest(),
         "tables": {RAW_TABLE: raw, STAGE_TABLE: stage},
-        "code": git_state(),
+        "code": git_state(ignore=git_ignore),
         "duckdb_version": duckdb.__version__,
         "built_at": datetime.now(UTC).isoformat(timespec="seconds"),
     }
@@ -124,7 +137,7 @@ def main() -> None:
     cfg = load_config()["data"]
     data_file = repo_path(cfg["raw_file"])
     with duckdb.connect(str(repo_path(cfg["database"]))) as con:
-        manifest = build_manifest(con, data_file)
+        manifest = build_manifest(con, data_file, git_ignore=(cfg["manifest_dir"],))
         path = write_manifest(manifest, repo_path(cfg["manifest_dir"]))
         store_manifest(con, manifest)
     print(f"Wrote {path.relative_to(REPO_ROOT)}")
