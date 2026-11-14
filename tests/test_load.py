@@ -16,6 +16,17 @@ def test_schema_is_well_formed():
     assert schema["type"].null_count() == 0
 
 
+def test_schema_dtypes_are_polars_types():
+    import polars as pl
+
+    bad = [d for d in schema_dtypes() if not hasattr(pl, d)]
+    assert not bad, f"Not polars dtypes: {bad}"
+
+
+def schema_dtypes():
+    return read_schema()["dtype"].unique().to_list()
+
+
 def test_header_mismatch_raises(tmp_path):
     f = tmp_path / "bad.csv"
     write_csv(f, ["Loan Number", "Not A Real Column"])
