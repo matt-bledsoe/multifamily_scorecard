@@ -14,3 +14,24 @@ manifest_dir = "manifests"
 
 # Data quality reports, one subdirectory per raw file (committed).
 report_dir = "reports/data_quality"
+
+[modeling]
+# Snapshots are taken at this month's reporting period each year, and the
+# target is default within the following horizon_months.
+snapshot_month = 12
+horizon_months = 12
+
+# 90+ delinquencies that start in this window and never lead to a credit
+# event, foreclosure or distressed exit are flagged as COVID forbearance.
+# They still count as defaults; the flag supports sensitivity analysis.
+covid_window_start = 2020-04-01
+covid_window_end = 2020-12-01
+
+# Out-of-time holdout: snapshot years whose horizons cover the 2009-2011
+# default peak. Remaining loans are split into train/test by loan number.
+oot_snapshot_years = [2008, 2009, 2010]
+test_share_pct = 30
+
+# Modeling data reports (waterfall, default rates), one subdirectory per raw
+# file (committed).
+report_dir = "reports/modeling_data"

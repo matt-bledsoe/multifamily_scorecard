@@ -8,6 +8,7 @@ book:
   chapters:
     - index.qmd
     - data-exploration.qmd
+    - modeling-data.qmd
 
 format:
   html:

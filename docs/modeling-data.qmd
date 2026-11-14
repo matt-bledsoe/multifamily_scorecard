@@ -1,0 +1,320 @@
+---
+title: "Default definition and modeling data"
+---
+
+```{python}
+#| label: setup
+#| code-summary: "Setup"
+import duckdb
+import matplotlib.pyplot as plt
+import polars as pl
+from IPython.display import Markdown
+
+from mf_scorecard import viz
+from mf_scorecard.config import load_config, repo_path
+from mf_scorecard.data.defaults import DEFAULTS_TABLE, DISTRESSED_EXITS
+from mf_scorecard.data.snapshots import (
+    EXCLUDED,
+    PERIOD_FEATURES,
+    STATIC_FEATURES,
+    default_rates,
+    sample_summary,
+    waterfall,
+)
+
+viz.apply_style()
+cfg = load_config()
+m = cfg["modeling"]
+con = duckdb.connect(str(repo_path(cfg["data"]["database"])), read_only=True)
+
+triggers = con.sql(
+    f"""SELECT default_trigger AS trigger, count(*) AS loans,
+        count(*) FILTER (covid_forbearance) AS covid
+    FROM {DEFAULTS_TABLE} WHERE default_month IS NOT NULL
+    GROUP BY ALL ORDER BY loans DESC"""
+).pl()
+n_default_loans = triggers["loans"].sum()
+n_covid = triggers["covid"].sum()
+rates = default_rates(con)
+samples = sample_summary(con)
+wf = waterfall(con)
+```
+
+SR 11-7 asks that model development begin with "a clear statement of
+purpose" and that data be "consistent with the theory behind the approach
+and with the chosen methodology" (p. 6). For a rating scorecard, the purpose
+is a one-year probability of default (PD). This chapter defines default and
+builds the dataset that matches that purpose: loans observed at a point in
+time, with an outcome measured over the following year.
+
+## Default definition
+
+A loan **defaults** in the first month in which any of the following
+happens:
+
+1. it is reported **90 or more days delinquent**;
+2. it has a **credit event** (a realised loss, with or without the lender
+   taking the property as REO);
+3. **foreclosure** starts;
+4. it leaves the data through a **distressed exit**:
+   `{python} ", ".join(DISTRESSED_EXITS).lower()`.
+
+This mirrors the regulatory definition used for bank rating systems: a
+borrower is in default when it is 90 days past due, or when an event shows
+it is unlikely to pay in full. Only the first default counts. Once a loan
+has defaulted it leaves the modeling sample, even if it later cures, because
+the scorecard rates performing borrowers.
+
+Under this definition `{python} f"{n_default_loans:,}"` loans default:
+
+```{python}
+#| label: tbl-triggers
+#| tbl-cap: "Loans by the event that first triggered default."
+Markdown(
+    viz.markdown_table(
+        triggers.rename(
+            {"trigger": "First trigger", "loans": "Loans", "covid": "COVID forbearance"}
+        )
+    )
+)
+```
+
+Most defaults are first seen as a 90+ delinquency. The other triggers
+matter because some loans move to foreclosure or a distressed sale without
+the monthly status ever showing 90+ days (in some cases because of gaps in
+the monthly history).
+
+Alternatives considered:
+
+- **60+ days delinquent**, Fannie Mae's "serious delinquency" measure and
+  the `loan_ever_60_plus_days_delinquent` flag. It adds a few hundred loans
+  that reached 60 days but cured before 90, at the cost of departing from
+  the regulatory definition the ratings need to be consistent with.
+- **Credit events only.** These are realised losses, closer to a
+  loss-given-default target, and there are too few of them to model a PD.
+- **Modifications.** Most modified loans in the data were never
+  delinquent, so a modification alone does not signal distress. Distressed
+  modifications are already caught when the loan reaches 90+ days.
+
+### COVID forbearance
+
+```{python}
+#| label: covid
+covid_year = rates.filter(pl.col("covid_forbearance_defaults") > 0).row(0, named=True)
+```
+
+In 2020, loans in COVID forbearance were often reported 90+ days delinquent
+while their payments were paused, and most then paid in full. Taken at face
+value they would be defaults; in substance most were not credit losses.
+`{python} f"{n_covid:,}"` defaults are 90+ delinquencies that began between
+`{python} m['covid_window_start'].strftime('%B %Y')` and
+`{python} m['covid_window_end'].strftime('%B %Y')` on loans that never had a
+credit event, foreclosure or distressed exit. They are **kept as defaults
+and flagged** (`covid_forbearance`), so that models can be fit with and
+without them and the difference reported. This is the kind of data
+adjustment SR 11-7 asks to be "properly tracked and analyzed" (p. 6).
+
+## Modeling observations
+
+Each year, every loan reported in the
+`{python} ['', 'January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'][m['snapshot_month']]`
+reporting period is a candidate observation (a **snapshot**). The target,
+`default_12m`, is whether the loan defaults in the following
+`{python} m['horizon_months']` months. A loan contributes one observation
+per year it is performing, so a ten-year loan contributes up to ten.
+
+A candidate is excluded if it has already defaulted, has already paid off
+or been liquidated, has zero balance, or if the data does not yet cover the
+full year after the snapshot. Loans that pay off or leave the data during
+the year without defaulting count as non-defaults (`exited_in_horizon`
+records them).
+
+```{python}
+#| label: tbl-waterfall
+#| tbl-cap: "Candidate snapshots and exclusions by snapshot year."
+cols = ["snapshot_year", "Candidates"] + [
+    c for c in wf.columns if c not in ("snapshot_year", "Candidates", "Eligible")
+] + ["Eligible"]
+Markdown(
+    viz.markdown_table(
+        wf.select(cols).rename({"snapshot_year": "Snapshot year"}),
+        no_separator=("Snapshot year",),
+    )
+)
+```
+
+The last December snapshot has no complete year after it in the data, so it
+is excluded entirely. Its loans enter the model in earlier years.
+
+## Default rates
+
+```{python}
+#| label: fig-default-rates
+#| fig-cap: "One-year default rate by snapshot year. The gray segment is COVID-forbearance defaults."
+years = rates["snapshot_year"].to_list()
+ex_covid = rates["default_rate_ex_covid_pct"].to_list()
+total = rates["default_rate_pct"].to_list()
+covid_part = [t - e for t, e in zip(total, ex_covid)]
+fig, ax = plt.subplots(figsize=(8, 3.4))
+ax.bar(years, ex_covid, width=0.8, color=viz.COLORS["series"], linewidth=0)
+ax.bar(
+    years,
+    covid_part,
+    bottom=ex_covid,
+    width=0.8,
+    color=viz.COLORS["deemphasis"],
+    linewidth=0,
+)
+ax.grid(axis="x", visible=False)
+viz.percent(ax, decimals=1)
+y = covid_year["snapshot_year"]
+ax.annotate(
+    "COVID\nforbearance",
+    xy=(y, covid_year["default_rate_pct"]),
+    xytext=(14, -4),
+    textcoords="offset points",
+    fontsize=9,
+    va="top",
+    color=viz.COLORS["ink_secondary"],
+)
+ax.set_title("One-year default rate")
+ax.set_xlabel("Snapshot year (default measured over the following year)")
+plt.show()
+```
+
+```{python}
+#| label: rates-summary
+dev = rates.filter(~pl.col("oot"))
+oot = rates.filter(pl.col("oot"))
+
+
+def pooled(df: pl.DataFrame, col: str) -> float:
+    return (df[col] * df["observations"]).sum() / df["observations"].sum()
+
+
+avg_all = pooled(rates, "default_rate_pct")
+avg_ex = pooled(rates, "default_rate_ex_covid_pct")
+avg_oot = pooled(oot, "default_rate_pct")
+```
+
+The one-year default rate is low: `{python} f"{avg_all:.2f}"`% across all
+snapshot years (`{python} f"{avg_ex:.2f}"`% without the COVID-forbearance
+defaults). It peaks at about 1% for the snapshots taken in
+`{python} min(m['oot_snapshot_years'])`–`{python} max(m['oot_snapshot_years'])`,
+whose one-year horizons cover the 2009–2011 default wave, and the COVID
+forbearance cases create a one-year spike for snapshots taken at the end of
+`{python} covid_year['snapshot_year']`. Without the flag, that spike would be the
+largest in the data and would distort both model fitting and the long-run
+average used for calibration.
+
+```{python}
+#| label: tbl-default-rates
+#| tbl-cap: "Observations and defaults by snapshot year."
+Markdown(
+    viz.markdown_table(
+        rates.select(
+            pl.col("snapshot_year").alias("Snapshot year"),
+            pl.when(pl.col("oot")).then(pl.lit("OOT")).otherwise(pl.lit("")).alias("Sample"),
+            pl.col("observations").alias("Observations"),
+            pl.col("defaults").alias("Defaults"),
+            pl.col("covid_forbearance_defaults").alias("COVID forbearance"),
+            pl.col("default_rate_pct").alias("Default rate (%)"),
+            pl.col("default_rate_ex_covid_pct").alias("Ex COVID (%)"),
+            pl.col("exited_in_horizon").alias("Exited in year"),
+        ),
+        decimals=2,
+        no_separator=("Snapshot year",),
+    )
+)
+```
+
+## Development, test and out-of-time samples
+
+```{python}
+#| label: tbl-samples
+#| tbl-cap: "Eligible observations by sample."
+Markdown(
+    viz.markdown_table(
+        samples.rename(
+            {
+                "sample": "Sample",
+                "loans": "Loans",
+                "observations": "Observations",
+                "defaults": "Defaults",
+                "default_rate_pct": "Default rate (%)",
+            }
+        ),
+        decimals=2,
+    )
+)
+```
+
+- **Out-of-time (OOT):** snapshot years
+  `{python} ", ".join(str(y) for y in m['oot_snapshot_years'])`, held out
+  entirely. Their horizons cover the post-2008 default wave, so the OOT
+  sample tests whether a model fit on calmer years still ranks risk
+  correctly in a stress period (at `{python} f"{avg_oot:.2f}"`%, roughly three
+  times the development default rate).
+- **Train and test:** the remaining years, split
+  `{python} 100 - m['test_share_pct']`/`{python} m['test_share_pct']` by a hash
+  of the loan number. All snapshots of a loan fall in the same sample, so
+  the test sample measures performance on loans the model has not seen.
+
+Holding out the stress years tests the model's *ranking* under stress. It
+does not mean the final PDs ignore those years: calibration to a
+through-the-cycle default rate (Phase 4) uses all of them.
+
+## Features available at the snapshot
+
+Features use only information known at the snapshot date:
+
+- **acquisition attributes** (`{python} len(STATIC_FEATURES)` columns),
+  including underwritten LTV, DSCR, occupancy, property type and location;
+- **the snapshot month's status** (`{python} len(PERIOD_FEATURES)` columns):
+  current balance, note rate, payment status, modification, current maturity;
+- **derived values:** months on book, months to maturity, current balance as
+  a share of original, and the number of months delinquent and modified in
+  the past year.
+
+These columns are deliberately **excluded** because they record outcomes
+after the snapshot, which would leak the target into the features:
+
+```{python}
+#| label: tbl-excluded
+#| tbl-cap: "Columns excluded from features, and why."
+Markdown(
+    viz.markdown_table(
+        pl.DataFrame(
+            {"Column": [f"`{c}`" for c in EXCLUDED], "Reason": list(EXCLUDED.values())}
+        )
+    )
+)
+```
+
+The event columns (payoff, foreclosure, credit event and loss amounts) are
+not features for the same reason; they are used only to define the target.
+
+## Limitations
+
+- **Underwriting metrics are not updated.** LTV, DSCR and occupancy are
+  as of acquisition. A loan underwritten at 1.4x DSCR in 2015 may be much
+  weaker by 2024, but the data cannot show it. A bank's scorecard would use
+  current financial statements; this model can only use loan age, balance
+  and payment history as proxies for how the property has changed.
+- **Exits count as non-defaults.** A loan that pays off mid-year cannot
+  default that year, which slightly understates PD for loans likely to
+  refinance. With `{python} f"{rates['exited_in_horizon'].sum():,}"` such
+  observations, this is worth testing in Phase 5 (for example by excluding
+  them or weighting by time observed).
+- **Observations are not independent.** Each loan appears in several years,
+  so standard errors from a model fit on all snapshots will be too small.
+- **Few defaults.** The training sample has
+  `{python} f"{samples.filter(sample='train')['defaults'].item():,}"`
+  defaults, which limits how many features and how many categories within
+  features the model can reliably estimate.
+
+```{python}
+#| label: teardown
+#| include: false
+con.close()
+```

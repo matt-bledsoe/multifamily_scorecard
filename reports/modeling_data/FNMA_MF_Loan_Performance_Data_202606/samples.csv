@@ -1,0 +1,4 @@
+sample,loans,observations,defaults,default_rate_pct
+oot,18472,46956,492,1.048
+test,20653,113057,392,0.347
+train,48033,262665,967,0.368
