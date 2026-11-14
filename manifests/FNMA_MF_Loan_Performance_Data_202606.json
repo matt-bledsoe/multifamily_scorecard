@@ -1,0 +1,27 @@
+{
+  "source_file": "FNMA_MF_Loan_Performance_Data_202606.csv",
+  "release": "2026-06",
+  "sha256": "1975327f2903d39be317d8456772e0efd7b4e9d068d3dd7eb8a98c7d426d1803",
+  "file_size_bytes": 2658895476,
+  "schema_sha256": "b5a40e9920c9c58a6ff549ac8fe34e9044ea4f0c112baf7169a20e42bb1ec7eb",
+  "tables": {
+    "mflpd_raw": {
+      "n_rows": 5481005,
+      "n_loans": 73695,
+      "first_reporting_period": "2000-01-01",
+      "last_reporting_period": "2026-06-01"
+    },
+    "mflpd_stage": {
+      "n_rows": 5481005,
+      "n_loans": 73695,
+      "first_reporting_period": "2000-01-01",
+      "last_reporting_period": "2026-06-01"
+    }
+  },
+  "code": {
+    "commit": "f912d1b760c4dc5676bfb3e46af3abe5f8a0b259",
+    "uncommitted_changes": false
+  },
+  "duckdb_version": "2.0.0",
+  "built_at": "2026-11-14T16:27:32+00:00"
+}

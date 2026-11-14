@@ -25,6 +25,23 @@ def read_schema() -> pl.DataFrame:
     )
 
 
+LEVELS = ("loan", "event", "period")
+
+
+def columns_at_level(level: str) -> list[str]:
+    """Columns whose schema ``level`` is ``loan``, ``event`` or ``period``.
+
+    - loan: fixed for the life of the loan (acquisition attributes and a few
+      loan-level outcomes repeated on every row)
+    - event: blank until an event such as payoff or foreclosure, then a
+      single value
+    - period: changes from one reporting period to the next
+    """
+    if level not in LEVELS:
+        raise ValueError(f"level must be one of {LEVELS}, not {level!r}")
+    return read_schema().filter(level=level)["name"].to_list()
+
+
 def read_header(data_file: Path) -> list[str]:
     with open(data_file, newline="", encoding="utf-8-sig") as f:
         return [name.strip() for name in next(csv.reader(f))]
