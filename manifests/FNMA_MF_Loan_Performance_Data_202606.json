@@ -19,9 +19,9 @@
     }
   },
   "code": {
-    "commit": "f64b5283d4ea44a052a7cf51f21613aa5eb6a47e",
-    "uncommitted_changes": true
+    "commit": "f912d1b760c4dc5676bfb3e46af3abe5f8a0b259",
+    "uncommitted_changes": false
   },
   "duckdb_version": "2.0.0",
-  "built_at": "2026-11-14T16:27:07+00:00"
+  "built_at": "2026-11-14T16:27:32+00:00"
 }
