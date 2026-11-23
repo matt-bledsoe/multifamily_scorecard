@@ -9,6 +9,11 @@ book:
     - index.qmd
     - data-exploration.qmd
     - modeling-data.qmd
+    - methods.qmd
+    - rating-scale.qmd
+    - references.qmd
+
+bibliography: references.bib
 
 format:
   html:
