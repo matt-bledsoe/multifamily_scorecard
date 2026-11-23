@@ -1,0 +1,243 @@
+---
+title: "Rating scale"
+---
+
+```{python}
+#| label: setup
+#| code-summary: "Setup"
+import duckdb
+import polars as pl
+from IPython.display import Markdown
+
+from mf_scorecard import viz
+from mf_scorecard.config import load_config, repo_path
+from mf_scorecard.data.snapshots import SNAPSHOTS_TABLE
+from mf_scorecard.rating_scale import (
+    GRADES,
+    PD_FLOOR,
+    PERFORMING,
+    assign_grades,
+    representative_pd,
+    scale_table,
+)
+
+cfg = load_config()
+con = duckdb.connect(str(repo_path(cfg["data"]["database"])), read_only=True)
+eligible = f"FROM {SNAPSHOTS_TABLE} WHERE exclusion_reason IS NULL"
+rate = "avg((default_12m AND NOT covid_forbearance)::INT)"
+
+
+def segment(label: str, where: str) -> dict:
+    [(n, r)] = con.execute(f"SELECT count(*), {rate} {eligible} AND {where}").fetchall()
+    return {"Segment": label, "Observations": n, "pd": r}
+
+
+worst_year = cfg["modeling"]["oot_snapshot_years"]
+anchors = pl.DataFrame(
+    [
+        segment(
+            "Current, DSCR 2.00x+ and LTV below 55%",
+            "loan_payment_status = 'Current' AND underwritten_dscr >= 2 "
+            "AND loan_acquisition_ltv < 55",
+        ),
+        segment("All current loans", "loan_payment_status = 'Current'"),
+        segment("All loans, 2009 snapshot", "snapshot_year = 2009"),
+        segment(
+            "Current, DSCR below 1.25x and LTV 70%+",
+            "loan_payment_status = 'Current' AND underwritten_dscr < 1.25 "
+            "AND loan_acquisition_ltv >= 70",
+        ),
+        segment("Modified at snapshot", "modification_indicator"),
+        segment(
+            "30–59 days delinquent", "loan_payment_status = '30-59 Days Delinquent'"
+        ),
+        segment(
+            "60–89 days delinquent", "loan_payment_status = '60-89 Days Delinquent'"
+        ),
+    ]
+)
+anchors = anchors.with_columns(grade=assign_grades(anchors["pd"]))
+```
+
+The README sets out why a bank rates its commercial borrowers and why a
+rating stands for an interval of one-year probabilities of default (PD).
+This chapter defines the scale the scorecard maps to: ten grades, the PD
+interval of each, and how the worst four line up with the regulatory
+categories.
+
+## Requirements
+
+- **Ten grades**, the worst four of which are the regulatory classified and
+  criticized categories: Special Mention, Substandard, Doubtful and Loss
+  [@occ_rating]. The other six are Pass grades.
+- **Enough performing grades.** Basel's internal ratings rules require at
+  least seven grades for non-defaulted borrowers and one for defaulted
+  borrowers [@basel2]. The scale has eight and two.
+- **Granularity where the loans are.** Most multifamily loans are very low
+  risk, so most of the Pass grades should separate low PDs from each other
+  rather than spread evenly up to 100%.
+- **Equal relative steps.** Moving one grade should mean about the same
+  proportional change in risk anywhere on the scale.
+
+## The scale
+
+```{python}
+#| label: tbl-scale
+#| tbl-cap: "Rating scale. Performing grades cover PD intervals that include the lower bound and exclude the upper bound."
+t = scale_table()
+Markdown(
+    viz.markdown_table(
+        t.rename(
+            {
+                "grade": "Grade",
+                "category": "Category",
+                "pd_min_pct": "PD from (%)",
+                "pd_max_pct": "PD to (%)",
+                "representative_pd_pct": "Representative PD (%)",
+            }
+        ),
+        decimals=3,
+    )
+)
+```
+
+- **Grades 1–8 are for performing loans** and are assigned by the model
+  from its PD. The interval edges roughly double from grade to grade
+  (0.05%, 0.10%, 0.20%, 0.40%, 0.80%), then widen at the top of the Pass
+  range and in Special Mention, where there are few loans.
+- **Grades 9 and 10 are for defaulted loans** and have a PD of 100%. The
+  difference between Doubtful (collection in full is highly questionable)
+  and Loss (uncollectible) is about the expected recovery, not the
+  likelihood of default, so the model does not assign them; credit officers
+  do, when a loan defaults.
+- **Grade 1 has a PD floor** of `{python} f"{100 * PD_FLOOR:.2f}"`%, the
+  minimum PD under the Basel and US advanced approaches. Even the strongest
+  loans have some default risk, and the data cannot estimate PDs this low
+  precisely.
+- **Special Mention** (grade 7, `{python} f"{100 * PERFORMING[6].pd_min:.0f}"`–`{python} f"{100 * PERFORMING[6].pd_max:.0f}"`%)
+  is for loans with potential weaknesses that deserve close attention, and
+  **Substandard** (grade 8, `{python} f"{100 * PERFORMING[7].pd_min:.0f}"`%
+  and above) for loans with well-defined weaknesses and a distinct
+  possibility of loss [@occ_rating]. A Substandard loan is still performing;
+  once it defaults it moves to grade 9 or 10.
+
+Each grade's **representative PD** is the geometric midpoint of its
+interval (using the floor for grade 1). It is the PD to use whenever a
+number is computed from a grade: expected loss, capital, or a portfolio's
+average risk.
+
+## Where the data falls on the scale
+
+The scale is set before the model is built, so it should not be tuned to
+the model's output. It can still be checked against observed default rates
+for segments a credit officer would recognise. If the scale is sensible,
+these should spread across the grades:
+
+```{python}
+#| label: tbl-anchors
+#| tbl-cap: "Observed one-year default rates (excluding COVID forbearance) for reference segments, and the grade each rate falls in."
+Markdown(
+    viz.markdown_table(
+        anchors.select(
+            "Segment",
+            "Observations",
+            (100 * pl.col("pd")).alias("Default rate (%)"),
+            pl.col("grade").alias("Grade"),
+        ),
+        decimals=2,
+    )
+)
+```
+
+The strongest current loans fall in the top grades and the average current
+loan in the middle of the Pass range. The weakest current loans by
+underwriting are still a Pass, while modified and delinquent loans fall in
+Special Mention and Substandard. This is the spread the scale was designed
+for.
+
+These are averages of whole segments; the model's PDs for individual loans
+will spread more widely. Once the model is built (Phase 4), the
+distribution of loans across grades will be checked for concentration:
+if most loans land in one or two grades, the scale is not separating risk
+where it matters, and the interval edges should be revisited.
+
+## Through the cycle
+
+The grades stand for **through-the-cycle** PDs. A loan's grade should not
+change just because the economy turns; the observed default rate of a
+grade will. In the 2009 snapshot, for example, the observed default rate of
+all loans was
+`{python} f"{100 * anchors.filter(Segment='All loans, 2009 snapshot')['pd'].item():.2f}"`%,
+about three times the long-run average. Validation (Phase 5) will
+therefore compare each grade's default rate to its interval averaged over
+the cycle, not year by year, and report the years in which grades fall
+outside their intervals.
+
+## Ratings are not numbers
+
+Labelling grades 1 to 10 invites treating them as numbers. A common example
+is the exposure-weighted average rating of a portfolio,
+$\sum_i R_i C_i$, where $R_i$ is borrower $i$'s grade and $C_i$ its share of
+exposure. Grades are ordinal: grade 8 is riskier than grade 4, but not
+twice as risky. Because the PD intervals double from grade to grade,
+averaging grades also understates the risk in the tail:
+
+```{python}
+#| label: tbl-portfolios
+#| tbl-cap: "Two portfolios with the same average rating."
+portfolios = pl.DataFrame(
+    {
+        "portfolio": ["A", "B", "B"],
+        "grade": [4, 1, 7],
+        "share": [1.0, 0.5, 0.5],
+    }
+)
+portfolios = portfolios.with_columns(pd=representative_pd(portfolios["grade"]))
+summary = (
+    portfolios.group_by("portfolio", maintain_order=True)
+    .agg(
+        composition=pl.format("{}% grade {}", (100 * pl.col("share")).cast(pl.Int32), "grade")
+        .str.join(", "),
+        avg_grade=(pl.col("grade") * pl.col("share")).sum(),
+        avg_pd=100 * (pl.col("pd") * pl.col("share")).sum(),
+    )
+)
+ratio = summary["avg_pd"][1] / summary["avg_pd"][0]
+Markdown(
+    viz.markdown_table(
+        summary.rename(
+            {
+                "portfolio": "Portfolio",
+                "composition": "Exposure",
+                "avg_grade": "Average grade",
+                "avg_pd": "Expected default rate (%)",
+            }
+        ),
+        decimals=2,
+    )
+)
+```
+
+Both portfolios have an average grade of 4, but portfolio B's expected
+default rate is about `{python} f"{ratio:.0f}"` times portfolio A's. The
+right summary is the exposure-weighted average **PD**, using each grade's
+representative PD, which can then be mapped back to a grade if a single
+label is needed.
+
+## Limitations
+
+- **The interval edges are a judgement.** They follow the requirements
+  above and the segment check, but other edges would be as defensible.
+  They are set in one place (`mf_scorecard.rating_scale`) so that the
+  effect of changing them can be tested.
+- **Tail grades rest on few loans.** Few loans are in Special Mention or
+  Substandard at any snapshot, so the data supports those intervals only
+  loosely.
+- **The scale is not the bank's.** It is built for this example, not taken
+  from any bank's rating system.
+
+```{python}
+#| label: teardown
+#| include: false
+con.close()
+```

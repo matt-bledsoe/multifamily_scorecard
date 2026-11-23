@@ -12,7 +12,7 @@
 8. Run `uv run python -m mf_scorecard.data.defaults` to build `loan_defaults`: each loan's first default month and trigger (90+ days delinquent, credit event, foreclosure, or distressed exit), with a `covid_forbearance` flag for 2020 payment pauses.
 9. Run `uv run python -m mf_scorecard.data.snapshots` to build `snapshots`: one row per loan each December with a one-year default target, snapshot-date features, an `exclusion_reason`, and a `sample` (`train`, `test` or `oot`). Settings are in the `[modeling]` section of `config.toml`. The exclusion waterfall and default rates go to `reports/modeling_data/<raw file name>/` (commit these).
 10. Run `uv run pytest` to run the tests.
-11. To build the documentation book in `docs/` (data exploration and modeling data chapters), install [Quarto](https://quarto.org/docs/get-started/), then run `uv run --group docs quarto render docs`. The output goes to `docs/_book/` (git-ignored); open `docs/_book/index.html`.
+11. To build the documentation book in `docs/` (data exploration, modeling data, methods and rating scale chapters), install [Quarto](https://quarto.org/docs/get-started/), then run `uv run --group docs quarto render docs`. The output goes to `docs/_book/` (git-ignored); open `docs/_book/index.html`.
 
 This project is an example place to work out the model development process for my team at work. The data used and the the goal is relevant to my job, which is an added benefit. I want to do the work (mostly) in Python to force myself to learn more (I'm more of an R user). I will constantly refer to the Federal Reserve's _Supervisory Guidance on Model Risk Management_, which is known as [SR 11-7](https://www.federalreserve.gov/supervisionreg/srletters/sr1107a1.pdf). This document contains the principles and standards to which model development and related activities at commercial banks are held.
 
@@ -26,7 +26,22 @@ Each rating represents an interval of probabilities of default (PD). These proba
 
 For our purposes, we will come up with our own rating scale. This will be somewhat arbitrary (this is _not_ the scale used by the bank I work for!). We'll use 10 ratings. While the rating agencies use letters (AAA, AA, A, BBB, etc.), many banks label their ratings with numerals. While simple (a numeral with a larger numerical value is riskier than one with a smaller numerical value), it commonly leads to the nonsensical use of the rating labels _as numbers_. For example, banks will "calculate" the weighted average rating as $\sum_i R_iC_i$ where $R_i$ is the rating of borrower $i$ and $C_i$ is borrower $i$'s proportion of committed exposure in the portfolio. 
 
-TODO: Rating scale
+The scale has eight grades for performing loans, assigned from the model's one-year through-the-cycle PD, and two for defaulted loans:
+
+| Grade | Category | PD interval |
+|---|---|---|
+| 1 | Pass | below 0.05% (floor 0.03%) |
+| 2 | Pass | 0.05% to 0.10% |
+| 3 | Pass | 0.10% to 0.20% |
+| 4 | Pass | 0.20% to 0.40% |
+| 5 | Pass | 0.40% to 0.80% |
+| 6 | Pass | 0.80% to 2% |
+| 7 | Special Mention | 2% to 10% |
+| 8 | Substandard | 10% and above, still performing |
+| 9 | Doubtful | defaulted |
+| 10 | Loss | defaulted |
+
+The intervals roughly double from grade to grade, so most of the Pass grades separate the low PDs where most multifamily loans are. Each grade has a representative PD (the geometric midpoint of its interval), and any portfolio average should be computed on those PDs, not on the grade numbers. The scale is defined in `src/mf_scorecard/rating_scale.py` and explained in the "Rating scale" chapter of the documentation book.
 
 ## Design, theory, and logic
 SR 11-7 outlines several principles related to the design of models.
@@ -37,7 +52,7 @@ SR 11-7 outlines several principles related to the design of models.
 - "Developers should ensure that the components work as intended, are appropriate for the intended business purpose, and are conceptually sound and mathematically and statistically correct." (p. 6)
 - Developers should compare their chosen theory or approach to alternatives.
 
-TODO: Possible theories and methods
+The champion model will be a logistic regression on weight-of-evidence binned features, a standard credit scorecard. Because the modeling data is annual snapshots with a one-year default target, it is also a one-year discrete-time hazard model. The challenger will be gradient-boosted trees, and a simple expert-style score on DSCR, LTV and payment status will serve as a benchmark. The fitted PDs will be calibrated to a long-run (through-the-cycle) default rate. The "Theory and methods" chapter of the documentation book covers the economics of multifamily default, the alternatives considered (expert slotting, splines, hazard, structural models), and the reasons for this choice.
 
 ## Data
 The data we will use is freely available from [Fannie Mae](https://capitalmarkets.fanniemae.com/credit-risk-transfer/multifamily-credit-risk-transfer/multifamily-loan-performance-data). It contains details of performance information and attributes of multifamily (aka, apartment) loans it has acquired since January 1, 2000. Over 67,000 loans are in the dataset representing overr 88% of FNMA's multifamily acquisitions during that period. This dataset is quite large, in some cases much larger than what a typical regional or smaller commercial bank would have internally.

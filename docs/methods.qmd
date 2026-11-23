@@ -1,0 +1,274 @@
+---
+title: "Theory and methods"
+---
+
+```{python}
+#| label: setup
+#| code-summary: "Setup"
+import duckdb
+import polars as pl
+from IPython.display import Markdown
+
+from mf_scorecard import viz
+from mf_scorecard.config import load_config, repo_path
+from mf_scorecard.data.snapshots import SNAPSHOTS_TABLE
+
+cfg = load_config()
+con = duckdb.connect(str(repo_path(cfg["data"]["database"])), read_only=True)
+eligible = f"FROM {SNAPSHOTS_TABLE} WHERE exclusion_reason IS NULL"
+
+n_train_defaults = con.sql(
+    f"SELECT count(*) FILTER (default_12m) {eligible} AND sample = 'train'"
+).fetchall()[0][0]
+yearly = con.sql(
+    f"""SELECT snapshot_year,
+        100 * avg(default_12m::INT) AS rate,
+        100 * avg((default_12m AND NOT covid_forbearance)::INT) AS rate_ex_covid
+    {eligible} GROUP BY 1"""
+).pl()
+ltv_dscr = con.sql(
+    f"""SELECT
+        CASE WHEN underwritten_dscr < 1.25 THEN 'Below 1.25x'
+             WHEN underwritten_dscr < 1.5 THEN '1.25x–1.50x'
+             WHEN underwritten_dscr < 2 THEN '1.50x–2.00x'
+             ELSE '2.00x and above' END AS dscr,
+        CASE WHEN loan_acquisition_ltv < 55 THEN 'Below 55%'
+             WHEN loan_acquisition_ltv < 70 THEN '55%–70%'
+             ELSE '70% and above' END AS ltv,
+        min(underwritten_dscr) AS dscr_order,
+        count(*) AS n,
+        100 * avg((default_12m AND NOT covid_forbearance)::INT) AS rate
+    {eligible} AND loan_payment_status = 'Current'
+        AND underwritten_dscr IS NOT NULL AND loan_acquisition_ltv IS NOT NULL
+    GROUP BY ALL"""
+).pl()
+```
+
+SR 11-7 asks that a model's design be "generally supported by published
+research and sound industry practice", that its methods be "explained in
+detail with particular attention to merits and limitations", and that
+developers compare the chosen approach with alternatives (p. 6). This
+chapter sets out what the model has to do, what theory says drives
+multifamily default, the methods considered, and the one chosen.
+
+## What the model has to do
+
+The model's job follows from its purpose (a rating scorecard) and from the
+data built in the previous chapter:
+
+- **Output.** A one-year, through-the-cycle probability of default (PD) for
+  each performing loan, which maps to one of the performing grades of the
+  rating scale (next chapter).
+- **Ranking and calibration.** It must rank loans by risk, and its PDs must
+  match observed default rates on average over the cycle.
+- **Explainability.** Credit officers must be able to see why a loan got its
+  grade and challenge it. Each input's effect on the PD should be visible
+  and make economic sense.
+- **Stability.** A loan's grade should change because its risk changed, not
+  because of noise in the model.
+- **Little data.** The training sample has `{python} f"{n_train_defaults:,}"`
+  defaults. That is plenty for a handful of well-chosen drivers but not for
+  many interactions.
+- **Implementable.** The inputs must be ones a bank would have for its own
+  loans at each review date.
+
+## What drives multifamily default
+
+The research on commercial and multifamily mortgages gives two economic
+triggers for default:
+
+- **Equity.** A borrower whose property is worth less than the loan has an
+  incentive to stop paying, as in option-pricing models of commercial
+  mortgages [@titman1989]. Loan-to-value (LTV) measures how far the property
+  value can fall before this happens.
+- **Cash flow.** A property whose net income does not cover the debt
+  payment cannot pay without new money from the borrower. The debt service
+  coverage ratio (DSCR) measures the cushion.
+
+Default is most likely when both happen at once: the property no longer
+covers its payments, and the owner has no equity to protect by putting more
+money in. This **double-trigger** view is the standard model of multifamily
+default [@goldberg2002]. Empirical work also finds that LTV and DSCR *at
+origination* predict default less well than this theory suggests, because
+lenders underwrite riskier properties to stricter LTV and DSCR limits, so
+property and location characteristics carry much of the signal
+[@archer2002].
+
+Both points show up in the data. Among current loans, the one-year default
+rate rises as acquisition DSCR falls and LTV rises, about
+`{python} f"{ltv_dscr['rate'].max() / ltv_dscr['rate'].min():.0f}"` times
+higher in the worst cell than in the best:
+
+```{python}
+#| label: tbl-ltv-dscr
+#| tbl-cap: "One-year default rate (%, excluding COVID forbearance) of current loans by acquisition DSCR and LTV. Observations in parentheses."
+cells = ltv_dscr.with_columns(
+    cell=pl.format(
+        "{} ({})",
+        pl.col("rate").round(2),
+        pl.col("n").map_elements(lambda n: f"{n:,}", return_dtype=pl.String),
+    )
+)
+order = (
+    cells.group_by("dscr").agg(pl.col("dscr_order").min()).sort("dscr_order")["dscr"]
+)
+wide = (
+    cells.pivot(on="ltv", index="dscr", values="cell")
+    .with_columns(pl.col("dscr").cast(pl.Enum(order.to_list())))
+    .sort("dscr")
+    .select("dscr", "Below 55%", "55%–70%", "70% and above")
+    .rename({"dscr": "DSCR \\ LTV"})
+)
+Markdown(viz.markdown_table(wide))
+```
+
+The effect is real but modest: even the worst cell is below 1%. The
+monthly payment history is far stronger. Loans already 30 or more days
+delinquent at the snapshot default within the year about half the time or
+more (see the rating scale chapter). The model will need both: acquisition
+underwriting to separate the large majority of current loans, and payment
+history to identify the few in trouble.
+
+Two limits from the data shape what the theory can deliver here. LTV and
+DSCR are only known at acquisition (the data does not update property
+values or income), so the model cannot follow either trigger over time
+directly. And the DSCR definitions changed over time (see the data
+exploration chapter), so DSCR must be made comparable across definitions
+before it is used.
+
+## Methods considered
+
+```{python}
+#| label: tbl-methods
+#| tbl-cap: "Candidate methods."
+methods = pl.DataFrame(
+    {
+        "Method": [
+            "Expert scorecard / supervisory slotting",
+            "Logistic regression on binned features (WoE scorecard)",
+            "Logistic regression on continuous features (splines)",
+            "Discrete-time hazard model",
+            "Gradient-boosted trees",
+            "Structural (option-pricing) model",
+        ],
+        "Merits": [
+            "No data needed; transparent; the Basel slotting approach for income-producing real estate",
+            "Industry standard; each bin's points are visible; handles missing values and non-linearity; robust with few defaults",
+            "Uses all the information in each feature; smooth PDs",
+            "Uses all of a loan's history; handles loans entering and leaving; standard for default timing",
+            "Finds non-linear effects and interactions automatically; often the most accurate",
+            "Grounded in the economics of the equity trigger",
+        ],
+        "Limitations": [
+            "Not fit to outcomes, so PDs are hard to calibrate and validate",
+            "Binning loses information and needs judgement; adjacent bins can jump",
+            "Harder to explain and constrain; spline terms use up degrees of freedom",
+            "Gives a hazard per period; a one-year PD needs a horizon and covariate path",
+            "Hard to explain; can overfit with few defaults; less stable over time",
+            "Needs property values and income over time, which the data lacks",
+        ],
+    }
+)
+Markdown(viz.markdown_table(methods))
+```
+
+Some notes on each:
+
+- **Expert scorecards** are common for commercial real estate in banks,
+  where defaults are rare. Basel's supervisory slotting criteria for
+  income-producing real estate are an example: analysts grade a loan as
+  strong, good, satisfactory or weak on the property's financial strength,
+  the sponsor and the security package [@basel2]. Here the data is large
+  enough to fit a statistical model, so slotting is a benchmark at most.
+- **Logistic regression with weight-of-evidence (WoE) binning** is the
+  standard credit scorecard [@siddiqi2017]. Each feature is cut into a few
+  bins, each bin gets a score, and the PD is a logistic function of the
+  summed scores. Bins also make it easy to impose a monotonic shape (for
+  example, risk never falls as LTV rises), which keeps the model
+  economically sensible.
+- **Discrete-time hazard models** fit a logistic regression on loan-period
+  observations [@shumway2001]. The annual snapshots built in the previous
+  chapter are close to this design already, with a one-year period, so the
+  logistic model *is* a discrete-time hazard model with a one-year step.
+  The difference matters only if the model needs PDs over horizons longer
+  than one year, which a rating scale does not.
+- **Gradient boosting** builds an ensemble of small trees, each fit to the
+  errors of the ones before [@friedman2001]. Benchmark studies find that
+  ensembles often rank borrowers better than logistic regression, though
+  the gap varies across datasets [@lessmann2015].
+- **Structural models** value the default option from property value and
+  income paths [@titman1989]. Without updated values or income, the model
+  would rest on assumed paths rather than data.
+
+## Chosen approach
+
+**Champion: logistic regression on WoE-binned features**, fit with
+statsmodels. It meets the requirements best: it is explainable bin by bin,
+monotonic shapes can be imposed, the coefficients and their standard errors
+are reported in a form validators and credit officers know, and it is
+robust with fewer than a thousand defaults. Because the observations are annual
+snapshots, the champion is a one-year discrete-time hazard model.
+
+**Challenger: gradient-boosted trees** (scikit-learn's histogram gradient
+boosting), fit to the same samples and features. It shows how much
+accuracy the champion gives up for transparency. If the challenger ranks
+much better, its partial-dependence plots point to the non-linear effects
+or interactions the champion is missing.
+
+**Benchmark: a simple expert-style score** using acquisition DSCR, LTV and
+payment status, with no fitted weights. A statistical model that cannot
+beat it is not worth its complexity.
+
+### Calibration
+
+The fitted model's PDs reflect the mix of years in the training sample. A
+rating scale needs **through-the-cycle** PDs: the expected one-year default
+rate over an economic cycle, not in the year the model was fit. After
+fitting, the model's intercept will be shifted so that its average PD
+equals a long-run default rate. A natural target is the average of the
+annual default rates across all snapshot years, including the
+out-of-time stress years: `{python} f"{yearly['rate'].mean():.2f}"`%
+(`{python} f"{yearly['rate_ex_covid'].mean():.2f}"`% without the COVID
+forbearance defaults). Which of the two to use is a Phase 4 decision, to be
+reported with its effect on the grades.
+
+### Delinquent loans
+
+Loans that are already delinquent at the snapshot are rare but default at
+very high rates. There are two ways to handle them: as a payment-status
+feature inside the model, or as an **override rule** that puts every
+delinquent loan in a high-risk grade regardless of the score. Banks often
+use such rules. Phase 4 will compare both; the rule is simpler and keeps a
+handful of delinquent loans from dominating the fit.
+
+## How the choice will be tested
+
+Phase 5 will test the champion against the challenger and the benchmark on
+the test and out-of-time samples, for:
+
+- **discrimination**: the area under the ROC curve (AUC), the Gini
+  coefficient and the Kolmogorov–Smirnov statistic;
+- **calibration**: predicted against observed default rates by grade and
+  over time, with binomial tests [@bcbs_wp14];
+- **stability**: the population stability index across years, and grade
+  migration;
+- **sensitivity**: how the PD moves with each input.
+
+## Limitations of the approach
+
+- **Binning is a judgement.** Bin edges affect the model. They will be
+  chosen from the data with minimum bin sizes and a monotonicity
+  requirement, and documented.
+- **Logistic regression assumes additive effects** on the log-odds scale.
+  The double-trigger theory implies an interaction between DSCR and LTV;
+  the champion can include it only as a combined feature, and the
+  challenger will show whether it matters.
+- **Repeated observations.** Each loan contributes several snapshots, so
+  standard errors from the logistic fit understate uncertainty. Standard
+  errors clustered by loan will be reported.
+
+```{python}
+#| label: teardown
+#| include: false
+con.close()
+```
